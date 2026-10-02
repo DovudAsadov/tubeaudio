@@ -1,0 +1,54 @@
+[project]
+name = "tubeaudio"
+version = "0.1.0"
+description = "Resumable bulk downloader for the best-quality audio of entire YouTube channels"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Dovud Asadov" }]
+requires-python = ">=3.11"
+keywords = ["youtube", "audio", "yt-dlp", "downloader", "dataset", "speech", "tts"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Multimedia :: Sound/Audio",
+]
+dependencies = [
+    "yt-dlp[default]>=2026.8.19",
+]
+
+[project.urls]
+Homepage = "https://github.com/DovudAsadov/tubeaudio"
+Issues = "https://github.com/DovudAsadov/tubeaudio/issues"
+
+[project.scripts]
+tubeaudio = "tubeaudio.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.16.10",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

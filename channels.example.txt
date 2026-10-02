@@ -1,0 +1,6 @@
+# One YouTube channel per line. Accepted forms:
+#   @handle
+#   https://www.youtube.com/@handle
+#   https://www.youtube.com/channel/UCxxxxxxxxxxxxxxxxxxxxxx
+#   UCxxxxxxxxxxxxxxxxxxxxxx
+# Blank lines and lines starting with '#' are ignored.
