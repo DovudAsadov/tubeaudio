@@ -1,3 +1,4 @@
+import errno
 import logging
 import threading
 import time
@@ -9,7 +10,8 @@ from tubeaudio.runner import RunConfig, Runner
 from tubeaudio.store import ChannelQueue, video_url
 from tubeaudio.ytdlp import ErrorKind
 
-FAST = dict(sleep_min=0, sleep_max=0, retry_delays=(0, 0, 0))
+FAST = dict(sleep_min=0, sleep_max=0, retry_delays=(0, 0, 0), min_free_bytes=0)
+GB = 1_000_000_000
 
 
 def ids(n: int, prefix: str = "v") -> list[str]:
@@ -183,3 +185,51 @@ def test_stop_during_retry_backoff_is_prompt(tmp_path: Path):
     runner.run([(ch, q)])
     assert time.monotonic() - started < 5
     assert q.pending() == [video_url(a)]
+
+
+def test_low_disk_space_stops_before_downloading(tmp_path: Path, caplog):
+    ch, q = make_queue(tmp_path, "@a", ids(2))
+    fake = FakeDownload()
+    runner = Runner(RunConfig(**dict(FAST, min_free_bytes=2 * GB)), fake, free_space=lambda path: 1 * GB)
+    with caplog.at_level(logging.ERROR, logger="tubeaudio"):
+        summary = runner.run([(ch, q)])
+    assert summary.low_space and summary.exit_code == 3
+    assert fake.calls == [] and len(q.pending()) == 2
+    assert "1.0 GB free" in caplog.text
+
+
+def test_disk_filling_mid_download_keeps_video_pending(tmp_path: Path):
+    a, b, c = ids(3)
+    ch, q = make_queue(tmp_path, "@a", [a, b, c])
+    free = {"bytes": 50 * GB}
+
+    def on_call(video_id, stop_event):
+        if video_id == b:
+            free["bytes"] = 0  # the disk filled up while b was downloading
+
+    fake = FakeDownload({b: [ErrorKind.FATAL]}, on_call=on_call)
+    runner = Runner(RunConfig(**dict(FAST, min_free_bytes=2 * GB)), fake, free_space=lambda path: free["bytes"])
+    summary = runner.run([(ch, q)])
+    assert summary.low_space and summary.exit_code == 3
+    assert fake.calls == [a, b]
+    assert q.done_ids() == {a}
+    assert q.pending() == [video_url(b), video_url(c)] and q.failed() == {}
+
+
+def test_disk_full_while_recording_done_keeps_video_pending(tmp_path: Path, monkeypatch):
+    (a,) = ids(1)
+    ch, q = make_queue(tmp_path, "@a", [a])
+
+    def disk_full(video_id):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(q, "mark_done", disk_full)
+    summary = Runner(RunConfig(**FAST), FakeDownload(), free_space=lambda path: 50 * GB).run([(ch, q)])
+    assert summary.low_space and summary.exit_code == 3
+    assert q.pending() == [video_url(a)]
+
+
+def test_min_free_zero_disables_the_disk_check(tmp_path: Path):
+    ch, q = make_queue(tmp_path, "@a", ids(1))
+    summary = Runner(RunConfig(**FAST), FakeDownload(), free_space=lambda path: 0).run([(ch, q)])
+    assert summary.downloaded == 1 and not summary.low_space

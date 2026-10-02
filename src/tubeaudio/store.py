@@ -2,7 +2,8 @@
 
 pending.txt  one video URL per line, in download order; a line is removed as
              soon as that video is downloaded (or fails permanently)
-done.txt     one video ID per line, appended after each successful download
+done.txt     one video URL per line, appended after each successful download
+             (older files with bare video IDs are still understood)
 failed.tsv   permanent failures: video_id, url, attempts, error, timestamp
 """
 
@@ -91,6 +92,10 @@ def _append_line(path: Path, line: str) -> None:
         os.fsync(fh.fileno())
 
 
+def _read_ids(path: Path) -> set[str]:
+    return {vid for line in _read_lines(path) if (vid := video_id_from_url(line))}
+
+
 def _read_failed(path: Path) -> dict[str, FailedEntry]:
     entries: dict[str, FailedEntry] = {}
     for line in _read_lines(path):
@@ -108,7 +113,7 @@ def read_counts(root: Path) -> QueueCounts:
     """Count queue entries without repairing anything (safe while a download runs)."""
     return QueueCounts(
         pending=len(_read_lines(root / PENDING_FILE)),
-        done=len(set(_read_lines(root / DONE_FILE))),
+        done=len(_read_ids(root / DONE_FILE)),
         failed=len(_read_failed(root / FAILED_FILE)),
     )
 
@@ -132,7 +137,7 @@ class ChannelQueue:
 
     def done_ids(self) -> set[str]:
         with self._lock:
-            return set(_read_lines(self._done_path))
+            return _read_ids(self._done_path)
 
     def failed(self) -> dict[str, FailedEntry]:
         with self._lock:
@@ -161,7 +166,7 @@ class ChannelQueue:
         # _reconcile() drops the stale pending line on the next start.
         with self._lock:
             if video_id not in self.done_ids():
-                _append_line(self._done_path, video_id)
+                _append_line(self._done_path, video_url(video_id))
             self._remove_pending({video_id})
 
     def mark_failed(self, video_id: str, url: str, error: str, attempts: int = 1) -> None:

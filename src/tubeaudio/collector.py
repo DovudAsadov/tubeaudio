@@ -37,6 +37,12 @@ class CollectResult:
     added: int
 
 
+@dataclass(frozen=True)
+class CollectSummary:
+    exit_code: int  # 0 all listed, 1 some failed, 2 blocked
+    listed: list[Channel]  # channels whose listing succeeded
+
+
 def list_channel_video_ids(channel: Channel, auth: Auth | None = None) -> list[str]:
     """IDs on the channel's Videos tab, newest first. One flat listing, no per-video requests."""
     try:
@@ -75,9 +81,10 @@ def collect_channel(channel: Channel, data_dir: Path, list_ids: ListIds) -> Coll
     return CollectResult(listed=len(ids), added=queue.add_new(ids))
 
 
-def collect_all(channels: list[Channel], data_dir: Path, list_ids: ListIds) -> int:
-    """Collect every channel. Returns 0 if all listed, 1 if some failed, 2 if blocked."""
+def collect_all(channels: list[Channel], data_dir: Path, list_ids: ListIds) -> CollectSummary:
+    """Collect every channel; stops early if YouTube blocks us or the environment is broken."""
     exit_code = 0
+    listed: list[Channel] = []
     for channel in channels:
         log.info("%s: listing videos…", channel.key)
         try:
@@ -87,8 +94,9 @@ def collect_all(channels: list[Channel], data_dir: Path, list_ids: ListIds) -> i
             if exc.kind in (ErrorKind.BLOCKED, ErrorKind.FATAL):
                 if exc.kind is ErrorKind.BLOCKED:
                     log.error(BLOCKED_ADVICE)
-                return 2 if exc.kind is ErrorKind.BLOCKED else 1
+                return CollectSummary(2 if exc.kind is ErrorKind.BLOCKED else 1, listed)
             exit_code = 1
             continue
+        listed.append(channel)
         log.info("%s: %d listed, %d new", channel.key, result.listed, result.added)
-    return exit_code
+    return CollectSummary(exit_code, listed)

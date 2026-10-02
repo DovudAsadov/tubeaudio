@@ -17,10 +17,10 @@ from pathlib import Path
 
 from yt_dlp.cookies import SUPPORTED_BROWSERS
 
-from .channels import Channel, channel_dir, load_channels, parse_channel
-from .collector import collect_all, list_channel_video_ids
+from .channels import Channel, channel_dir, comment_out_channels, load_channels, parse_channel
+from .collector import CollectSummary, collect_all, list_channel_video_ids
 from .downloader import check_ffmpeg, download_audio
-from .runner import RunConfig, Runner
+from .runner import RunConfig, Runner, free_bytes, low_space_message
 from .store import ChannelQueue, read_counts
 from .ytdlp import BLOCKED_ADVICE, Auth, detect_js_runtimes
 
@@ -92,7 +92,10 @@ def _channels(args: argparse.Namespace) -> list[Channel]:
     except ValueError as exc:
         raise UsageError(str(exc)) from None
     if not channels:
-        raise UsageError(f"{path} lists no channels")
+        raise UsageError(
+            f"{path} lists no channels (finished channels are commented out with '#'; "
+            "remove the '# ' to download a channel's new uploads)"
+        )
     return channels
 
 
@@ -105,11 +108,24 @@ def _auth(args: argparse.Namespace) -> Auth:
     return Auth(cookies_file=args.cookies, cookies_from_browser=browser.lower() if browser else None)
 
 
+def _non_negative_float(text: str) -> float:
+    value = float(text)
+    if not value >= 0:  # also rejects nan
+        raise argparse.ArgumentTypeError("must be >= 0")
+    return value
+
+
 def _run_config(args: argparse.Namespace) -> RunConfig:
     sleep_min, sleep_max = args.sleep
     if sleep_min < 0 or sleep_max < sleep_min:
         raise UsageError("--sleep MIN MAX needs 0 <= MIN <= MAX")
-    return RunConfig(workers=args.workers, limit=args.limit, sleep_min=sleep_min, sleep_max=sleep_max)
+    return RunConfig(
+        workers=args.workers,
+        limit=args.limit,
+        sleep_min=sleep_min,
+        sleep_max=sleep_max,
+        min_free_bytes=int(args.min_free_gb * 1e9),
+    )
 
 
 def _preflight() -> None:
@@ -126,8 +142,31 @@ def _preflight() -> None:
 # ---------------------------------------------------------------- work
 
 
-def _collect(channels: list[Channel], data_dir: Path, auth: Auth) -> int:
+def _low_disk(data_dir: Path, config: RunConfig) -> bool:
+    """Log and return True if the data disk is already below the free-space reserve."""
+    if config.min_free_bytes <= 0:
+        return False
+    free = free_bytes(data_dir)
+    if free >= config.min_free_bytes:
+        return False
+    log.error(low_space_message(free, config.min_free_bytes, data_dir))
+    return True
+
+
+def _collect(channels: list[Channel], data_dir: Path, auth: Auth) -> CollectSummary:
     return collect_all(channels, data_dir, functools.partial(list_channel_video_ids, auth=auth))
+
+
+def _comment_out_finished(channels_file: Path, listed: list[Channel], data_dir: Path) -> None:
+    """Comment out channels.txt entries whose videos are all downloaded."""
+    today = datetime.now().date().isoformat()
+    notes: dict[str, str] = {}
+    for channel in listed:
+        counts = read_counts(channel_dir(data_dir, channel))
+        if counts.pending == 0:
+            notes[channel.key] = f"finished {today}, {counts.done} videos"
+    for key in comment_out_channels(channels_file, notes):
+        log.info("%s: all videos downloaded; commented out in %s", key, channels_file)
 
 
 def _download(channels: list[Channel], data_dir: Path, auth: Auth, config: RunConfig, retry_failed: bool) -> int:
@@ -145,7 +184,7 @@ def _download(channels: list[Channel], data_dir: Path, auth: Auth, config: RunCo
     total = sum(len(q.pending()) for _, q in queues)
     log.info("%d video(s) pending across %d channel(s); %d worker(s)", total, len(queues), config.workers)
     started = time.monotonic()
-    summary = Runner(config, functools.partial(download_audio, auth=auth)).run(queues)
+    summary = Runner(config, functools.partial(download_audio, auth=auth), free_space=free_bytes).run(queues)
     still_pending = sum(len(q.pending()) for _, q in queues)
     minutes = (time.monotonic() - started) / 60
     log.info(
@@ -167,12 +206,14 @@ def _download(channels: list[Channel], data_dir: Path, auth: Auth, config: RunCo
 def cmd_collect(args: argparse.Namespace) -> int:
     channels, auth = _channels(args), _auth(args)
     with data_lock(args.data_dir):
-        return _collect(channels, args.data_dir, auth)
+        return _collect(channels, args.data_dir, auth).exit_code
 
 
 def cmd_download(args: argparse.Namespace) -> int:
     channels, auth, config = _channels(args), _auth(args), _run_config(args)
     _preflight()
+    if _low_disk(args.data_dir, config):
+        return 3
     with data_lock(args.data_dir):
         return _download(channels, args.data_dir, auth, config, args.retry_failed)
 
@@ -180,11 +221,16 @@ def cmd_download(args: argparse.Namespace) -> int:
 def cmd_run(args: argparse.Namespace) -> int:
     channels, auth, config = _channels(args), _auth(args), _run_config(args)
     _preflight()
+    if _low_disk(args.data_dir, config):
+        return 3
     with data_lock(args.data_dir):
-        collect_code = _collect(channels, args.data_dir, auth)
-        if collect_code == 2:
+        collected = _collect(channels, args.data_dir, auth)
+        if collected.exit_code == 2:
             return 2
-        return _download(channels, args.data_dir, auth, config, args.retry_failed) or collect_code
+        code = _download(channels, args.data_dir, auth, config, args.retry_failed)
+        if not args.channel:
+            _comment_out_finished(args.channels_file, collected.listed, args.data_dir)
+        return code or collected.exit_code
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -236,6 +282,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="random pause between downloads in seconds (default: 2 6)",
     )
     download.add_argument("--retry-failed", action="store_true", help="move failed.tsv entries back to pending first")
+    download.add_argument(
+        "--min-free-gb",
+        type=_non_negative_float,
+        default=2.0,
+        metavar="GB",
+        help="stop when free disk space drops below this (default: 2; 0 disables)",
+    )
 
     parser = argparse.ArgumentParser(
         prog="tubeaudio",

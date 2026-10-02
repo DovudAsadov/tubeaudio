@@ -104,7 +104,9 @@ def test_collect_all_continues_after_failed_channel(tmp_path: Path):
             raise CollectFailed(ErrorKind.TRANSIENT, "HTTP Error 404: Not Found")
         return [A]
 
-    assert collect_all([CH1, CH2], tmp_path, list_ids) == 1
+    summary = collect_all([CH1, CH2], tmp_path, list_ids)
+    assert summary.exit_code == 1
+    assert summary.listed == [CH2]  # only channels whose listing succeeded
     assert not (tmp_path / "channels" / "@one").exists()  # no empty folder for a bad channel
     assert ChannelQueue(tmp_path / "channels" / "@two").pending() == [video_url(A)]
 
@@ -116,9 +118,11 @@ def test_collect_all_stops_when_blocked(tmp_path: Path):
         seen.append(ch)
         raise CollectFailed(ErrorKind.BLOCKED, "Sign in to confirm you're not a bot")
 
-    assert collect_all([CH1, CH2], tmp_path, list_ids) == 2
+    summary = collect_all([CH1, CH2], tmp_path, list_ids)
+    assert (summary.exit_code, summary.listed) == (2, [])
     assert seen == [CH1]
 
 
 def test_collect_all_ok(tmp_path: Path):
-    assert collect_all([CH1, CH2], tmp_path, lambda ch: [A, B]) == 0
+    summary = collect_all([CH1, CH2], tmp_path, lambda ch: [A, B])
+    assert (summary.exit_code, summary.listed) == (0, [CH1, CH2])

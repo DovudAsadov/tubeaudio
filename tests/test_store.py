@@ -49,9 +49,17 @@ def test_mark_done_moves_from_pending_to_done(tmp_path: Path):
     q.add_new([A, B])
     q.mark_done(A)
     assert q.pending() == [video_url(B)]
-    assert lines(tmp_path / "done.txt") == [A]
+    assert lines(tmp_path / "done.txt") == [video_url(A)]  # the link moves from pending to done
     q.mark_done(A)  # idempotent
-    assert lines(tmp_path / "done.txt") == [A]
+    assert lines(tmp_path / "done.txt") == [video_url(A)]
+
+
+def test_old_id_only_done_file_still_counts(tmp_path: Path):
+    (tmp_path / "done.txt").write_text(f"{A}\n{video_url(A)}\n", encoding="utf-8")  # old + new format
+    q = ChannelQueue(tmp_path)
+    assert q.add_new([A, B]) == 1
+    assert q.done_ids() == {A}
+    assert read_counts(tmp_path).done == 1
 
 
 def test_mark_failed_writes_sanitized_tsv_row(tmp_path: Path):
@@ -105,7 +113,7 @@ def test_append_after_truncated_last_line(tmp_path: Path):
     q = ChannelQueue(tmp_path)
     q.add_new([B])
     q.mark_done(B)
-    assert lines(tmp_path / "done.txt") == [A, B]
+    assert lines(tmp_path / "done.txt") == [A, video_url(B)]
 
 
 def test_concurrent_mark_done_is_consistent(tmp_path: Path):
@@ -118,7 +126,7 @@ def test_concurrent_mark_done_is_consistent(tmp_path: Path):
     for t in threads:
         t.join()
     assert q.pending() == []
-    assert sorted(lines(tmp_path / "done.txt")) == sorted(ids)
+    assert sorted(lines(tmp_path / "done.txt")) == sorted(video_url(i) for i in ids)
 
 
 def test_read_counts_does_not_modify_files(tmp_path: Path):

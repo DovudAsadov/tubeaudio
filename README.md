@@ -11,6 +11,7 @@ Built for collecting speech and audio datasets.
 - **Resumable**: the queue lives in plain text files, so you can stop at any time and rerun to continue
 - **Incremental**: rerunning `collect` only adds new uploads
 - **Robust**: retries with backoff, stops cleanly on rate limits, never saves degraded fallback formats
+- **Disk-safe**: stops before the disk fills up; free some space and rerun to continue
 
 ## Install
 
@@ -31,6 +32,7 @@ uv run tubeaudio status                # pending / done / failed per channel
 ```
 
 The two steps can also run separately: `tubeaudio collect`, then `tubeaudio download`.
+When a channel is fully downloaded, `run` comments it out in `channels.txt`; remove the `# ` to fetch its new uploads.
 
 | Option | Description |
 |---|---|
@@ -40,6 +42,7 @@ The two steps can also run separately: `tubeaudio collect`, then `tubeaudio down
 | `--sleep MIN MAX` | random pause between downloads in seconds (default `2 6`) |
 | `--cookies FILE`, `--cookies-from-browser NAME` | use your YouTube login |
 | `--retry-failed` | re-queue videos that failed permanently |
+| `--min-free-gb GB` | stop when free disk space drops below this (default `2`, `0` disables) |
 | `--data-dir DIR` | output directory (default `data`) |
 
 ## Output
@@ -47,12 +50,14 @@ The two steps can also run separately: `tubeaudio collect`, then `tubeaudio down
 ```
 data/channels/<channel>/
 ├── pending.txt      # URLs left to download
-├── done.txt         # downloaded video IDs
+├── done.txt         # URLs already downloaded
 ├── failed.tsv       # unavailable videos and the reason
 └── audio/
     ├── <id>.opus
     └── <id>.info.json
 ```
+
+Finished `.opus`/`.info.json` files can be moved elsewhere at any time (e.g. when the disk is full); they are never downloaded again.
 
 ## Development
 

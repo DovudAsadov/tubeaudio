@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from tubeaudio.channels import Channel, channel_dir, load_channels, parse_channel
+from tubeaudio.channels import Channel, channel_dir, comment_out_channels, load_channels, parse_channel
 
 CID = "UCkH_kZuTvTDw5ojt-aqTolQ"
 
@@ -64,3 +64,42 @@ def test_load_channels_reports_bad_line(tmp_path: Path):
     path.write_text("@ok\nnot a channel\n", encoding="utf-8")
     with pytest.raises(ValueError, match=r"channels\.txt:2"):
         load_channels(path)
+
+
+def test_load_channels_allows_inline_comments(tmp_path: Path):
+    path = tmp_path / "channels.txt"
+    path.write_text(f"@one  # main news channel\n{CID}\t# lectures\n", encoding="utf-8")
+    assert [c.key for c in load_channels(path)] == ["@one", CID]
+
+
+def test_comment_out_channels(tmp_path: Path):
+    path = tmp_path / "channels.txt"
+    path.write_text(
+        "# my list\n\nhttps://www.youtube.com/@One/videos\n@two  # keep me\n# @three\n",
+        encoding="utf-8",
+    )
+    done = comment_out_channels(path, {"@one": "finished 2026-10-02, 12 videos", "@three": "x"})
+    assert done == ["@one"]  # "@three" is already commented out
+    assert path.read_text(encoding="utf-8") == (
+        "# my list\n\n"
+        "# https://www.youtube.com/@One/videos  # finished 2026-10-02, 12 videos\n"
+        "@two  # keep me\n# @three\n"
+    )
+    assert [c.key for c in load_channels(path)] == ["@two"]
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_uncommenting_a_finished_channel_brings_it_back(tmp_path: Path):
+    path = tmp_path / "channels.txt"
+    path.write_text("@one\n", encoding="utf-8")
+    comment_out_channels(path, {"@one": "finished 2026-10-02, 3 videos"})
+    path.write_text(path.read_text(encoding="utf-8").removeprefix("# "), encoding="utf-8")
+    assert [c.key for c in load_channels(path)] == ["@one"]
+
+
+def test_comment_out_channels_nothing_to_do_leaves_file_untouched(tmp_path: Path):
+    path = tmp_path / "channels.txt"
+    path.write_text("@one\n", encoding="utf-8")
+    before = path.stat().st_mtime_ns
+    assert comment_out_channels(path, {"@other": "finished"}) == []
+    assert path.stat().st_mtime_ns == before

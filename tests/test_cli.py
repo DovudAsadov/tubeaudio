@@ -1,13 +1,17 @@
+from datetime import date
 from pathlib import Path
 
 import pytest
 
 from tubeaudio import cli
 from tubeaudio.cli import data_lock, main
+from tubeaudio.collector import CollectFailed
 from tubeaudio.downloader import DownloadResult
 from tubeaudio.store import ChannelQueue
+from tubeaudio.ytdlp import ErrorKind
 
 A, B = "aaaaaaaaaaa", "bbbbbbbbbbb"
+GB = 1_000_000_000
 
 
 @pytest.fixture
@@ -32,7 +36,15 @@ def fake_network(monkeypatch):
     monkeypatch.setattr(cli, "list_channel_video_ids", fake_list)
     monkeypatch.setattr(cli, "download_audio", fake_download)
     monkeypatch.setattr(cli, "check_ffmpeg", lambda: None)
+    monkeypatch.setattr(cli, "free_bytes", lambda path: 100 * GB)
     return calls
+
+
+@pytest.fixture
+def channels_file(tmp_path: Path) -> Path:
+    path = tmp_path / "channels.txt"
+    path.write_text("# my channels\n@One\n@two  # second\n", encoding="utf-8")
+    return path
 
 
 def test_status_with_no_data(data_dir: Path, capsys):
@@ -118,3 +130,65 @@ def test_version(capsys):
         main(["--version"])
     assert info.value.code == 0
     assert capsys.readouterr().out.strip() == "tubeaudio 0.1.0"
+
+
+def test_run_comments_out_finished_channels(data_dir: Path, channels_file: Path, fake_network, capsys):
+    args = ["run", "--channels-file", str(channels_file), "--data-dir", str(data_dir), "--sleep", "0", "0"]
+    assert main(args) == 0
+    today = date.today().isoformat()
+    assert channels_file.read_text(encoding="utf-8") == (
+        f"# my channels\n# @One  # finished {today}, 2 videos\n# @two  # second  # finished {today}, 2 videos\n"
+    )
+    assert "commented out" in capsys.readouterr().err
+    assert main(args) == 1  # nothing left to do
+    assert "finished channels are commented out" in capsys.readouterr().err
+
+
+def test_run_keeps_channels_with_videos_left(data_dir: Path, channels_file: Path, fake_network):
+    before = channels_file.read_text(encoding="utf-8")
+    args = ["run", "--channels-file", str(channels_file), "--data-dir", str(data_dir), "--sleep", "0", "0"]
+    assert main([*args, "--limit", "1"]) == 0
+    assert channels_file.read_text(encoding="utf-8") == before
+
+
+def test_run_does_not_retire_a_channel_it_could_not_list(
+    data_dir: Path, channels_file: Path, fake_network, monkeypatch
+):
+    ChannelQueue(data_dir / "channels" / "@one")  # collected earlier, nothing pending
+
+    def failing_list(channel, auth=None):
+        raise CollectFailed(ErrorKind.TRANSIENT, "HTTP Error 500")
+
+    monkeypatch.setattr(cli, "list_channel_video_ids", failing_list)
+    before = channels_file.read_text(encoding="utf-8")
+    args = ["run", "--channels-file", str(channels_file), "--data-dir", str(data_dir), "--sleep", "0", "0"]
+    assert main(args) == 1
+    assert channels_file.read_text(encoding="utf-8") == before
+
+
+def test_run_with_channel_flag_leaves_channels_file_alone(data_dir: Path, channels_file: Path, fake_network):
+    before = channels_file.read_text(encoding="utf-8")
+    args = ["run", "--channel", "@one", "--channels-file", str(channels_file), "--data-dir", str(data_dir)]
+    assert main([*args, "--sleep", "0", "0"]) == 0
+    assert channels_file.read_text(encoding="utf-8") == before
+
+
+def test_low_disk_space_stops_before_starting(data_dir: Path, fake_network, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "free_bytes", lambda path: 1 * GB)
+    assert main(["run", "--channel", "@demo", "--data-dir", str(data_dir)]) == 3
+    assert "1.0 GB free" in capsys.readouterr().err
+    assert fake_network["listed"] == [] and fake_network["downloaded"] == []
+
+
+def test_low_disk_space_mid_run_stops_with_exit_3(data_dir: Path, fake_network, monkeypatch):
+    free = iter([100 * GB, 100 * GB, 1 * GB])  # preflight, first video, then the disk is full
+    monkeypatch.setattr(cli, "free_bytes", lambda path: next(free, 1 * GB))
+    assert main(["run", "--channel", "@demo", "--data-dir", str(data_dir), "--sleep", "0", "0"]) == 3
+    assert fake_network["downloaded"] == [A]
+    assert len(ChannelQueue(data_dir / "channels" / "@demo").pending()) == 1
+
+
+def test_min_free_gb_zero_disables_disk_check(data_dir: Path, fake_network, monkeypatch):
+    monkeypatch.setattr(cli, "free_bytes", lambda path: 0)
+    args = ["run", "--channel", "@demo", "--data-dir", str(data_dir), "--sleep", "0", "0", "--min-free-gb", "0"]
+    assert main(args) == 0

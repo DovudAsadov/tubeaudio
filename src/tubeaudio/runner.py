@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import errno
 import logging
 import random
+import shutil
 import threading
 from collections.abc import Callable, Iterator
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -28,6 +30,7 @@ class Outcome(Enum):
     TRANSIENT = "transient"
     CANCELLED = "cancelled"
     BLOCKED = "blocked"
+    LOW_SPACE = "low_space"
     FATAL = "fatal"
 
 
@@ -41,6 +44,8 @@ class RunConfig:
     # Stop when this many videos in a row exhaust their retries: something is wrong
     # with the setup (outdated yt-dlp, cookies, network), not with the videos.
     max_consecutive_failures: int = 5
+    # Stop before the disk is completely full (0 disables the check).
+    min_free_bytes: int = 2_000_000_000
 
 
 @dataclass
@@ -52,12 +57,15 @@ class RunSummary:
     blocked: bool = False
     fatal: bool = False
     stalled: bool = False
+    low_space: bool = False
     cancelled: bool = False
 
     @property
     def exit_code(self) -> int:
         if self.blocked:
             return 2
+        if self.low_space:
+            return 3
         if self.fatal or self.stalled:
             return 1
         if self.cancelled:
@@ -72,6 +80,22 @@ class _Item:
     url: str
     index: int
     total: int
+
+
+def free_bytes(path: Path) -> int:
+    """Free bytes on the disk holding `path` (or its nearest existing parent)."""
+    path = Path(path).absolute()
+    while not path.exists() and path != path.parent:
+        path = path.parent
+    return shutil.disk_usage(path).free
+
+
+def low_space_message(free: int, min_free: int, path: Path) -> str:
+    return (
+        f"Stopped: only {free / 1e9:.1f} GB free on the disk holding {path} "
+        f"(tubeaudio keeps {min_free / 1e9:g} GB in reserve). Move finished audio (.opus/.info.json) "
+        "somewhere else, then run the same command again; it continues where it left off."
+    )
 
 
 def _fmt_duration(seconds: float | None) -> str:
@@ -95,10 +119,19 @@ def _short(message: str, limit: int = 160) -> str:
 
 
 class Runner:
-    def __init__(self, config: RunConfig, download: DownloadFn, stop_event: threading.Event | None = None) -> None:
+    def __init__(
+        self,
+        config: RunConfig,
+        download: DownloadFn,
+        stop_event: threading.Event | None = None,
+        free_space: Callable[[Path], int] = free_bytes,
+    ) -> None:
         self.config = config
         self._download = download
         self.stop_event = stop_event or threading.Event()
+        self._free_space = free_space
+        self._low_space_lock = threading.Lock()
+        self._low_space_reported = False
         self._consecutive_give_ups = 0  # only touched by the main thread (_record)
         self._last_error = ""
 
@@ -173,6 +206,8 @@ class Runner:
                 )
         elif outcome is Outcome.BLOCKED:
             summary.blocked = True
+        elif outcome is Outcome.LOW_SPACE:
+            summary.low_space = True
         elif outcome is Outcome.FATAL:
             summary.fatal = True
 
@@ -180,6 +215,25 @@ class Runner:
         delay = random.uniform(self.config.sleep_min, self.config.sleep_max)
         if delay > 0:
             self.stop_event.wait(delay)
+
+    def _out_of_space(self, path: Path) -> bool:
+        """True (and the run is stopped) if free space on `path`'s disk is below the reserve."""
+        min_free = self.config.min_free_bytes
+        if min_free <= 0:
+            return False
+        free = self._free_space(path)
+        if free >= min_free:
+            return False
+        self._stop_for_low_space(free, path)
+        return True
+
+    def _stop_for_low_space(self, free: int, path: Path) -> None:
+        self.stop_event.set()
+        with self._low_space_lock:
+            if self._low_space_reported:
+                return
+            self._low_space_reported = True
+        log.error(low_space_message(free, max(self.config.min_free_bytes, 0), path))
 
     def _process(self, item: _Item) -> Outcome:
         tag = f"[{item.channel.key} {item.index}/{item.total}]"
@@ -192,12 +246,16 @@ class Runner:
         while True:
             if self.stop_event.is_set():
                 return Outcome.CANCELLED
+            if self._out_of_space(item.queue.audio_dir):
+                return Outcome.LOW_SPACE
             attempt += 1
             try:
                 result = self._download(video_id, item.queue.audio_dir, self.stop_event)
             except Cancelled:
                 return Outcome.CANCELLED
             except DownloadFailed as exc:
+                if self._out_of_space(item.queue.audio_dir):
+                    return Outcome.LOW_SPACE  # the disk filled up mid-download: not the video's fault
                 if exc.kind in (ErrorKind.BLOCKED, ErrorKind.FATAL):
                     log.error("%s ! %s %s", tag, video_id, _short(exc.message))
                     self.stop_event.set()
@@ -230,7 +288,13 @@ class Runner:
                 if self.stop_event.wait(delay):
                     return Outcome.CANCELLED
                 continue
-            item.queue.mark_done(video_id)
+            try:
+                item.queue.mark_done(video_id)
+            except OSError as exc:
+                if exc.errno not in (errno.ENOSPC, errno.EDQUOT):
+                    raise
+                self._stop_for_low_space(self._free_space(item.queue.audio_dir), item.queue.audio_dir)
+                return Outcome.LOW_SPACE
             if result.skipped:
                 log.info("%s = %s already on disk", tag, video_id)
                 return Outcome.SKIPPED
