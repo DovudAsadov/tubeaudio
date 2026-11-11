@@ -17,7 +17,7 @@ from pathlib import Path
 
 from yt_dlp.cookies import SUPPORTED_BROWSERS
 
-from .channels import Channel, channel_dir, comment_out_channels, load_channels, parse_channel
+from .channels import Channel, channel_dir, comment_out_channels, load_channels, merge_channels, parse_channel
 from .collector import CollectSummary, collect_all, list_channel_video_ids
 from .downloader import check_ffmpeg, download_audio
 from .runner import RunConfig, Runner, free_bytes, low_space_message
@@ -79,7 +79,7 @@ def _positive_int(text: str) -> int:
 def _channels(args: argparse.Namespace) -> list[Channel]:
     if args.channel:
         try:
-            return list(dict.fromkeys(parse_channel(c) for c in args.channel))
+            return merge_channels(parse_channel(c) for c in args.channel)
         except ValueError as exc:
             raise UsageError(str(exc)) from None
     path: Path = args.channels_file

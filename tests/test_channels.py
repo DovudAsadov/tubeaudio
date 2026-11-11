@@ -41,9 +41,28 @@ def test_parse_channel_rejects(text):
         parse_channel(text)
 
 
-def test_videos_url():
-    assert Channel("@abc").videos_url == "https://www.youtube.com/@abc/videos"
-    assert Channel(CID).videos_url == f"https://www.youtube.com/channel/{CID}/videos"
+@pytest.mark.parametrize(
+    ("text", "tabs"),
+    [
+        ("@SomeChannel", ("videos",)),
+        ("https://www.youtube.com/@SomeChannel", ("videos",)),
+        ("https://www.youtube.com/@SomeChannel/videos", ("videos",)),
+        ("https://m.youtube.com/@SomeChannel/featured", ("videos",)),
+        ("https://www.youtube.com/@SomeChannel/streams", ("streams",)),
+        ("youtube.com/@SomeChannel/streams?si=abc", ("streams",)),
+        (f"https://www.youtube.com/channel/{CID}/streams", ("streams",)),
+    ],
+)
+def test_parse_channel_tab(text, tabs):
+    assert parse_channel(text).tabs == tabs
+
+
+def test_urls():
+    assert Channel("@abc").urls == ("https://www.youtube.com/@abc/videos",)
+    assert Channel(CID, ("videos", "streams")).urls == (
+        f"https://www.youtube.com/channel/{CID}/videos",
+        f"https://www.youtube.com/channel/{CID}/streams",
+    )
 
 
 def test_channel_dir(tmp_path: Path):
@@ -57,6 +76,20 @@ def test_load_channels_skips_comments_blanks_and_duplicates(tmp_path: Path):
         encoding="utf-8",
     )
     assert [c.key for c in load_channels(path)] == ["@first", CID]
+
+
+def test_load_channels_merges_tabs_of_one_channel(tmp_path: Path):
+    path = tmp_path / "channels.txt"
+    path.write_text(
+        "https://www.youtube.com/@One/streams\n@two\nhttps://www.youtube.com/@one/videos\n"
+        "https://www.youtube.com/@three/streams\n",
+        encoding="utf-8",
+    )
+    assert load_channels(path) == [
+        Channel("@one", ("videos", "streams")),
+        Channel("@two", ("videos",)),
+        Channel("@three", ("streams",)),
+    ]
 
 
 def test_load_channels_reports_bad_line(tmp_path: Path):
@@ -87,6 +120,13 @@ def test_comment_out_channels(tmp_path: Path):
     )
     assert [c.key for c in load_channels(path)] == ["@two"]
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_comment_out_channels_comments_every_tab_line(tmp_path: Path):
+    path = tmp_path / "channels.txt"
+    path.write_text("https://www.youtube.com/@one/videos\nhttps://www.youtube.com/@one/streams\n", encoding="utf-8")
+    assert comment_out_channels(path, {"@one": "finished"}) == ["@one"]
+    assert load_channels(path) == []
 
 
 def test_uncommenting_a_finished_channel_brings_it_back(tmp_path: Path):

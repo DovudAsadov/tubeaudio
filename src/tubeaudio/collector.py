@@ -1,4 +1,4 @@
-"""List every video on a channel's Videos tab and queue the new ones."""
+"""List every video on a channel's Videos (and optionally Streams) tab and queue the new ones."""
 
 from __future__ import annotations
 
@@ -44,13 +44,13 @@ class CollectSummary:
 
 
 def list_channel_video_ids(channel: Channel, auth: Auth | None = None) -> list[str]:
-    """IDs on the channel's Videos tab, newest first. One flat listing, no per-video requests."""
+    """IDs on the channel's tabs, each newest first. One flat listing per tab, no per-video requests."""
     try:
         with private_cookies(auth or Auth()) as session_auth:
             opts = base_opts(session_auth)
             opts.update({"extract_flat": "in_playlist", "skip_download": True})
             with YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(channel.videos_url, download=False)
+                infos = [ydl.extract_info(url, download=False) for url in channel.urls]
     except CookieLoadError as exc:
         raise CollectFailed(ErrorKind.FATAL, f"could not load cookies: {exc}") from exc
     except (DownloadError, ExtractorError) as exc:
@@ -61,7 +61,8 @@ def list_channel_video_ids(channel: Channel, auth: Auth | None = None) -> list[s
     ids: list[str] = []
     seen: set[str] = set()
     not_aired = 0
-    for entry in (info or {}).get("entries") or []:
+    entries = [entry for info in infos for entry in (info or {}).get("entries") or []]
+    for entry in entries:
         entry = entry or {}
         vid = entry.get("id")
         if entry.get("live_status") in _NOT_AIRED:
