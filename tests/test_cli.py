@@ -21,10 +21,11 @@ def data_dir(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def fake_network(monkeypatch):
-    calls = {"listed": [], "downloaded": []}
+    calls = {"listed": [], "tabs": [], "downloaded": []}
 
     def fake_list(channel, auth=None):
         calls["listed"].append(channel.key)
+        calls["tabs"].append(channel.tabs)
         return [A, B]
 
     def fake_download(video_id, audio_dir, stop_event, *, auth=None):
@@ -59,6 +60,13 @@ def test_collect_then_status(data_dir: Path, fake_network, capsys):
     assert main(["status", "--data-dir", str(data_dir)]) == 0
     out = capsys.readouterr().out
     assert "@demo" in out and "TOTAL" in out
+
+
+def test_channel_option_merges_tabs(data_dir: Path, fake_network):
+    args = ["collect", "--channel", "https://www.youtube.com/@Demo/streams", "--channel", "@demo"]
+    assert main([*args, "--data-dir", str(data_dir)]) == 0
+    assert fake_network["listed"] == ["@demo"]
+    assert fake_network["tabs"] == [("videos", "streams")]
 
 
 def test_run_downloads_everything(data_dir: Path, fake_network):

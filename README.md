@@ -33,6 +33,7 @@ uv run tubeaudio status                # pending / done / failed per channel
 
 The two steps can also run separately: `tubeaudio collect`, then `tubeaudio download`.
 When a channel is fully downloaded, `run` comments it out in `channels.txt`; remove the `# ` to fetch its new uploads.
+Only the Videos tab is collected by default; add a `https://www.youtube.com/@handle/streams` line to also get past live streams.
 
 | Option | Description |
 |---|---|

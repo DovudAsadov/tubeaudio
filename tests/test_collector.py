@@ -16,8 +16,10 @@ CH1, CH2 = Channel("@one"), Channel("@two")
 
 class FakeYDL:
     result = None
+    by_url = None  # {url: result}, overrides `result`
     error = None
     opts = None
+    urls = []
 
     def __init__(self, opts):
         FakeYDL.opts = opts
@@ -29,15 +31,16 @@ class FakeYDL:
         return False
 
     def extract_info(self, url, download):
-        assert url == CH1.videos_url and download is False
+        assert download is False
+        FakeYDL.urls.append(url)
         if FakeYDL.error:
             raise FakeYDL.error
-        return FakeYDL.result
+        return FakeYDL.by_url[url] if FakeYDL.by_url else FakeYDL.result
 
 
 @pytest.fixture
 def fake_ydl(monkeypatch):
-    FakeYDL.result, FakeYDL.error, FakeYDL.opts = None, None, None
+    FakeYDL.result, FakeYDL.by_url, FakeYDL.error, FakeYDL.opts, FakeYDL.urls = None, None, None, None, []
     monkeypatch.setattr(collector, "YoutubeDL", FakeYDL)
     return FakeYDL
 
@@ -46,6 +49,17 @@ def test_list_channel_video_ids_flat_and_deduped(fake_ydl):
     fake_ydl.result = {"entries": [{"id": A}, None, {"id": B}, {"id": A}, {"title": "no id"}]}
     assert list_channel_video_ids(CH1) == [A, B]
     assert fake_ydl.opts["extract_flat"] == "in_playlist"
+    assert fake_ydl.urls == ["https://www.youtube.com/@one/videos"]
+
+
+def test_list_channel_video_ids_videos_and_streams(fake_ydl):
+    channel = Channel("@one", ("videos", "streams"))
+    fake_ydl.by_url = {
+        "https://www.youtube.com/@one/videos": {"entries": [{"id": A}, {"id": B}]},
+        "https://www.youtube.com/@one/streams": {"entries": [{"id": B}, {"id": C, "live_status": "was_live"}]},
+    }
+    assert list_channel_video_ids(channel) == [A, B, C]
+    assert fake_ydl.urls == list(channel.urls)
 
 
 def test_list_channel_video_ids_skips_upcoming_and_live(fake_ydl):
