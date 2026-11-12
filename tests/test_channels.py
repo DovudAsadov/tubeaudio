@@ -5,6 +5,7 @@ import pytest
 from tubeaudio.channels import Channel, channel_dir, comment_out_channels, load_channels, parse_channel
 
 CID = "UCkH_kZuTvTDw5ojt-aqTolQ"
+PL = "PL0123456789abcd-EFG_hij"
 
 
 @pytest.mark.parametrize(
@@ -20,6 +21,8 @@ CID = "UCkH_kZuTvTDw5ojt-aqTolQ"
         (f"https://www.youtube.com/channel/{CID}", CID),
         (f"https://www.youtube.com/channel/{CID}/videos", CID),
         (CID, CID),
+        (f"https://www.youtube.com/playlist?list={PL}", PL),
+        (f"youtube.com/playlist?si=abc&list={PL}&index=2", PL),
     ],
 )
 def test_parse_channel(text, key):
@@ -34,6 +37,8 @@ def test_parse_channel(text, key):
         "https://www.youtube.com/watch?v=jNQXAC9IVRw",
         "https://example.com/@someone",
         "https://www.youtube.com/c/LegacyName",
+        "https://www.youtube.com/playlist",
+        f"https://www.youtube.com/watch?v=jNQXAC9IVRw&list={PL}",
     ],
 )
 def test_parse_channel_rejects(text):
@@ -65,6 +70,13 @@ def test_urls():
     )
 
 
+def test_playlist_urls():
+    playlist = parse_channel(f"https://www.youtube.com/playlist?list={PL}")
+    assert playlist.is_playlist
+    assert playlist.urls == (f"https://www.youtube.com/playlist?list={PL}",)
+    assert not Channel("@abc").is_playlist and not Channel(CID).is_playlist
+
+
 def test_channel_dir(tmp_path: Path):
     assert channel_dir(tmp_path, Channel("@abc")) == tmp_path / "channels" / "@abc"
 
@@ -90,6 +102,14 @@ def test_load_channels_merges_tabs_of_one_channel(tmp_path: Path):
         Channel("@two", ("videos",)),
         Channel("@three", ("streams",)),
     ]
+
+
+def test_load_channels_with_playlist_and_comment_out(tmp_path: Path):
+    path = tmp_path / "channels.txt"
+    path.write_text(f"@one\nhttps://www.youtube.com/playlist?list={PL}  # podcast\n", encoding="utf-8")
+    assert [c.key for c in load_channels(path)] == ["@one", PL]
+    assert comment_out_channels(path, {PL: "finished"}) == [PL]
+    assert [c.key for c in load_channels(path)] == ["@one"]
 
 
 def test_load_channels_reports_bad_line(tmp_path: Path):

@@ -263,7 +263,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--channel",
         action="append",
         metavar="CHANNEL",
-        help="only this channel (@handle, channel ID or URL); repeatable; channels.txt not needed",
+        help="only this channel (@handle, channel ID or URL) or playlist URL; repeatable; channels.txt not needed",
     )
 
     auth = argparse.ArgumentParser(add_help=False)

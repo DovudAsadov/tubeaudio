@@ -1,4 +1,4 @@
-"""Parse channels.txt entries into channels with stable folder names."""
+"""Parse channels.txt entries into channels (or playlists) with stable folder names."""
 
 from __future__ import annotations
 
@@ -17,6 +17,9 @@ _URL_RE = re.compile(
     rf"(?:(?P<handle>@[^/?#\s]+)|channel/(?P<cid>{_CHANNEL_ID}))"
     r"(?:/(?P<tab>[^/?#\s]*))?(?:[/?#].*)?$"
 )
+_PLAYLIST_URL_RE = re.compile(
+    r"^(?:https?://)?(?:www\.|m\.)?youtube\.com/playlist\?(?:[^#\s]*&)?list=(?P<pid>[A-Za-z0-9_-]{10,})(?:[&#].*)?$"
+)
 _INLINE_COMMENT_RE = re.compile(r"\s+#.*$")
 
 # Channel pages whose videos can be collected, in collection order.
@@ -25,16 +28,24 @@ TABS = ("videos", "streams")
 
 @dataclass(frozen=True)
 class Channel:
-    """A YouTube channel; `key` is its folder name: '@handle' (lowercase) or 'UC…' id.
+    """A YouTube channel or playlist; `key` is its folder name: '@handle' (lowercase),
+    'UC…' channel id, or playlist id.
 
     `tabs` are the channel pages to collect videos from: 'videos' and/or 'streams'.
+    A playlist has no tabs: its one page is the playlist itself.
     """
 
     key: str
     tabs: tuple[str, ...] = ("videos",)
 
     @property
+    def is_playlist(self) -> bool:
+        return not self.key.startswith("@") and not _CHANNEL_ID_RE.match(self.key)
+
+    @property
     def urls(self) -> tuple[str, ...]:
+        if self.is_playlist:
+            return (f"https://www.youtube.com/playlist?list={self.key}",)
         path = self.key if self.key.startswith("@") else f"channel/{self.key}"
         return tuple(f"https://www.youtube.com/{path}/{tab}" for tab in self.tabs)
 
@@ -57,7 +68,10 @@ def parse_channel(text: str) -> Channel:
         if match["handle"]:
             return Channel(_handle_key(match["handle"]), tabs)
         return Channel(match["cid"], tabs)
-    raise ValueError(f"not a YouTube channel @handle, channel ID, or channel URL: {s!r}")
+    match = _PLAYLIST_URL_RE.match(s)
+    if match:
+        return Channel(match["pid"])  # playlist ids are case-sensitive: keep as is
+    raise ValueError(f"not a YouTube channel @handle, channel ID, channel URL, or playlist URL: {s!r}")
 
 
 def _entry(raw: str) -> str:
