@@ -4,4 +4,5 @@
 #   https://www.youtube.com/@handle/streams    (past live streams; Videos tab needs its own line)
 #   https://www.youtube.com/channel/UCxxxxxxxxxxxxxxxxxxxxxx
 #   UCxxxxxxxxxxxxxxxxxxxxxx
+#   https://www.youtube.com/playlist?list=PLxxxxxxxxxxxxxxxx   (only that playlist)
 # Blank lines and lines starting with '#' are ignored.
